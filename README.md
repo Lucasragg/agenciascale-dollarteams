@@ -33,6 +33,8 @@ As fontes precisam continuar acessíveis por link. A atualização do dashboard 
 
 ## Desenvolvimento
 
+O gráfico **Eficiência · CPL por dia**, abaixo da tabela de Decisão de mídia, acompanha o período e a seleção de campanha, conjunto ou anúncio. O eixo X mostra datas e o eixo Y mostra CPL em US$. O tooltip informa CPL, investimento e leads daquele dia, com comparação ao período anterior. Dias sem leads ou sem cobertura não são desenhados como CPL zero.
+
 Python 3.12 ou superior; apenas biblioteca padrão.
 
 ```sh
