@@ -7,7 +7,12 @@ Dashboard de aquisição Meta Ads, publicada no GitHub Pages. Duas fontes Google
 - Mídia: `MetaAds`, gid `2142085051`, da planilha `1YlmghmRdvXgjPaEppRH5fnyBxqADz70HalLv1jfAhMU`.
 - Leads: `CurtoV3DP`, gid `1507896329`, da planilha `1XcaQNhwyzwpn8sW5gp9OgCRp0pVXyFceoXqVrmAP_3Q`.
 - Investimento em USD, sem conversão, conforme confirmado pelo responsável.
-- Uma linha com Registration date = uma inscrição/lead. Total Signups não é somado. Não se presume que inscrições sejam pessoas únicas. Vendas foram excluídas por solicitação do responsável.
+- Uma linha com Registration date = uma inscrição/lead. Total Signups não é somado. Não se presume que inscrições sejam pessoas únicas.
+- Free Trials e vendas vêm do CSV da Impact de 16/09/2026; vendas = ações Paid Trial, com status Pending nessa exportação. A atribuição por e-mail herda as UTMs da inscrição e preserva a data da ação, mesmo quando ocorre dias depois. São 673 Free Trials e 182 Paid Trials com origem de mídia identificada no histórico importado.
+- `data/impact.json` contém apenas o snapshot agregado. O arquivo bruto e os e-mails ficam fora da publicação. Atualizações horárias de mídia e leads preservam esse snapshot; Impact ainda não está conectado à API.
+- Conversão lead → Free Trial = contatos por e-mail inscritos no período que tiveram trial / contatos inscritos no período. Conversão Free Trial → venda = contatos desse grupo com trial seguido de Paid Trial / contatos com trial. A observação vai até a data do CSV; grupos recentes ainda estão em maturação. As taxas usam contatos, enquanto os cards de volume contam ações distintas. A base de contatos acompanha o snapshot da importação.
+- Eventos anteriores à data de inscrição ficam nas contagens com sinalização de revisão e são excluídos das taxas de avanço. A ordem de horários do mesmo dia permanece provisória enquanto os fusos não forem confirmados. Um e-mail não equivale necessariamente a uma loja; a atribuição é provisória.
+- CAC = investimento do período / ações Paid Trial atribuídas no período. Taxas e CAC não são mostrados para períodos que ultrapassam a data do snapshot; dias sem importação não são tratados como zero. Cada atualização manual deve regenerar o snapshot completo, sem anexar duplicatas.
 - UTM campaign → Campaign ID, UTM term → Ad Set ID, UTM content → Ad ID. Prioridade: anúncio, conjunto, campanha. Fallback por nome exato e único no contexto da campanha. IDs são preservados como strings. IDs conflitantes ficam sem atribuição.
 - Leads sem UTM ou sem correspondência são exibidos separadamente, sem classificá-los automaticamente como orgânicos. Não entram no CPL pago nem na conversão paga. Atribuição parcial é conservada e aparece em linhas próprias nas tabelas.
 - IDs são cruzados contra todo o histórico da mídia. O resultado é agregado na data da inscrição, sem exigir que o anúncio tenha gasto nesse dia.
@@ -44,3 +49,13 @@ python -m http.server 8766 -d dist
 ```
 
 O diretório `public` contém os fontes; `dist` é gerado. Não publique planilhas brutas ou credenciais.
+
+Para importar um novo CSV local com uma leitura atualizada de e-mails, datas e UTMs dos leads:
+
+```sh
+python scripts/impact_data.py caminho/impact.csv --leads .local/impact-lead-match-source.json --ads .local/ads.json --output data/impact.json
+python -m unittest discover -s tests -v
+python scripts/build_data.py
+```
+
+O importador publica somente campos agregados permitidos, verifica vazamento de e-mails e rejeita Action IDs repetidos. A rotina de nuvem não lê e-mails: apenas combina o snapshot agregado com as fontes já utilizadas pela dashboard.

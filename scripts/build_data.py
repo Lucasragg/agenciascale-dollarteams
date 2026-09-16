@@ -206,6 +206,9 @@ def main():
     else:
         with ThreadPoolExecutor(max_workers=2) as pool: inputs = list(pool.map(fetch_source, SOURCES))
     dataset = build(*inputs)
+    from impact_data import merge_impact
+    snapshot = json.loads((ROOT/'data'/'impact.json').read_text(encoding='utf-8'))
+    dataset = merge_impact(dataset, snapshot)
     output = ROOT/'dist'
     output.mkdir(exist_ok=True)
     for name in ('index.html','app.js','styles.css','.nojekyll'):
