@@ -1,0 +1,67 @@
+name: Atualizar dashboard e publicar
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dollar-teams-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Testar regras de atribuição e cálculo
+        run: python -m unittest discover -s tests -v
+      - name: Ler planilhas e gerar dados públicos agregados
+        run: python scripts/build_data.py
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
+  activity:
+    if: github.event_name == 'schedule'
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Manter o agendamento ativo no repositório público
+        shell: bash
+        run: |
+          month=$(date -u +%Y-%m)
+          previous=$(cat .github/activity 2>/dev/null || true)
+          if [ "$month" != "$previous" ]; then
+            echo "$month" > .github/activity
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add .github/activity
+            git commit -m "chore: manter automação ativa em $month"
+            git push
+          fi
