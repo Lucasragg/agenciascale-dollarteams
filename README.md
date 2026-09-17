@@ -40,6 +40,8 @@ As fontes precisam continuar acessíveis por link. A atualização do dashboard 
 
 ## Desenvolvimento
 
+A tabela de detalhamento diário fica imediatamente abaixo dos cards, em ordem decrescente de data, com todas as 17 métricas dos cards e conversão clique → lead. Os cabeçalhos permitem selecionar múltiplas séries no gráfico de evolução logo abaixo. O gráfico inicia vazio; a seleção permanece ao alterar período/campanha/conjunto/anúncio. Uma métrica usa valores reais no eixo Y; múltiplas métricas usam escala relativa por série (100% = pico da métrica no período), com valores reais no tooltip. Dados indisponíveis ficam como lacunas. Os cabeçalhos funcionam por teclado, e as setas no gráfico permitem consultar datas.
+
 Os 17 cards compactos seguem a ordem do funil: Investimento, Impressões, Cliques, CPM, CTR, CPC, Landing page views, Connect rate, Leads, Custo por lead, Free Trials, Custo por Free Trial, Paid Trial, Custo por Paid Trial, Conversão página → lead, Conversão lead → Free Trial e Conversão Free Trial → Paid. O custo por Paid Trial usa o mesmo cálculo de CAC. Cada card inclui uma descrição curta e comparação com o período anterior. Em desktop amplo são seis cards por linha; a grade se adapta a telas menores.
 
 O gráfico **Eficiência · CPL por dia**, abaixo da tabela de Decisão de mídia, acompanha o período e a seleção de campanha, conjunto ou anúncio. O eixo X mostra datas e o eixo Y mostra CPL em US$. O tooltip informa CPL, investimento e leads daquele dia, com comparação ao período anterior. Dias sem leads ou sem cobertura não são desenhados como CPL zero.

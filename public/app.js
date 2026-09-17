@@ -3,7 +3,16 @@ const $ = id => document.getElementById(id);
 const baseMetrics = ['spend','impressions','clicks','views','leads','freeTrials','sales','cohortContacts','trialContacts','trialSalesContacts','dateIssues'];
 const impactMetrics = ['freeTrials','sales','trialRate','salesRate','cpft','cac'];
 const labels = {spend:'Investimento',impressions:'Impressões',clicks:'Cliques',views:'Page views',leads:'Leads',cpm:'CPM',ctr:'CTR',cpc:'CPC',cpl:'CPL',leadRate:'LP → lead',clickRate:'Clique → lead',connectRate:'Connect rate',freeTrials:'Free Trials',trialRate:'Lead → Free Trial',sales:'Vendas · Paid Trial',salesRate:'Free Trial → venda',cpft:'Custo por Free Trial',cac:'CAC'};
-const state = {data:null,start:'',end:'',campaign:'',adset:'',ad:'',level:'campaign',sort:'spend',direction:-1,search:'',chart:'leads',tableRows:[],daily:[],previous:[],loading:false};
+const state = {data:null,start:'',end:'',campaign:'',adset:'',ad:'',level:'campaign',sort:'spend',direction:-1,search:'',chart:'leads',tableRows:[],daily:[],previous:[],dailyMetrics:[],loading:false};
+const dailyMetricDefs = [
+  ['spend','Investimento','#639bff'],['impressions','Impressões','#b89aff'],['clicks','Cliques','#29cbb7'],
+  ['cpm','CPM','#7ca8ed'],['ctr','CTR','#b784ff'],['cpc','CPC','#3eded1'],
+  ['views','Landing page views','#29c4e0'],['connectRate','Connect rate','#8edbea'],['leads','Leads','#7aeaad'],
+  ['cpl','Custo por lead','#e4d35b'],['freeTrials','Free Trials','#38d59b'],['cpft','Custo por Free Trial','#c9dc83'],
+  ['sales','Paid Trial','#edb36e'],['cac','Custo por Paid Trial','#ed8daa'],
+  ['leadRate','Página → lead','#83caaa'],['trialRate','Lead → Free Trial','#86c3dc'],['salesRate','Free Trial → Paid','#d0a5e8'],
+  ['clickRate','Clique → lead','#eca9cf']
+];
 const money = new Intl.NumberFormat('pt-BR',{style:'currency',currency:'USD',currencyDisplay:'symbol',maximumFractionDigits:2});
 const integer = new Intl.NumberFormat('pt-BR',{maximumFractionDigits:0});
 const decimal = new Intl.NumberFormat('pt-BR',{maximumFractionDigits:2,minimumFractionDigits:2});
@@ -56,8 +65,44 @@ function render(){if(!state.data)return;const rows=periodRows(state.start,state.
   $('metrics').innerHTML=cards.map(([key,label,symbol,tone,detail])=>`<article class="metric tone-${tone}" data-metric="${key}"><div class="metric-top"><span class="metric-label">${label}</span><span class="symbol" aria-hidden="true">${symbol}</span></div><div class="metric-value">${fmt(key,current[key])}</div><div class="metric-bottom"><span class="metric-detail">${esc(detail)}</span><span class="metric-comparison">${delta(key,current[key],comparison[key],complete&&(!impactMetrics.includes(key)||(impactComplete(state.start,state.end,['trialRate','salesRate'].includes(key))&&impactComplete(prev.start,prev.end,['trialRate','salesRate'].includes(key)))))}<span>vs. anterior</span></span></div></article>`).join('');
   const stages=[['spend','Investimento',null,''],['impressions','Impressões',current.cpm,'CPM'],['clicks','Cliques no link',current.ctr,'CTR'],['views','Page views',current.connectRate,'dos cliques'],['leads','Leads atribuídos',current.leadRate,'das page views'],['freeTrials','Free Trials',current.trialRate,'dos contatos inscritos'],['sales','Vendas · Paid Trial',current.salesRate,'dos contatos com trial']];
   $('funnel').innerHTML=stages.map(([key,label,rate,hint],i)=>{const width=key==='spend'?100:current.impressions?Math.max(3,Math.min(100,current[key]/current.impressions*100)):0;return `<div class="funnel-row"><span class="funnel-number">0${i+1}</span><div><div class="funnel-meta"><span>${label}</span><b>${fmt(key,current[key])}</b></div><div class="funnel-track"><div class="funnel-fill" style="width:${width}%"></div></div></div><div class="funnel-rate"><b>${i===0?'USD':i===1?fmt('cpm',rate):fmt('ctr',rate)}</b>${esc(hint)}</div></div>`;}).join('');
-  state.daily=daily(rows,state.start,state.end);state.previous=daily(previousRows,prev.start,prev.end);renderChart();renderEfficiency();renderTable(rows);renderAttribution(rows);$('dailyBody').innerHTML=[...state.daily].reverse().map(r=>`<tr><td>${shortDate(r.date)}</td>${['spend','leads','freeTrials','sales','cpl','cpft','cac','trialRate','salesRate'].map(k=>`<td>${fmt(k,r[k])}</td>`).join('')}</tr>`).join('');
+  state.daily=daily(rows,state.start,state.end);state.previous=daily(previousRows,prev.start,prev.end);renderChart();renderEfficiency();renderTable(rows);renderAttribution(rows);renderDailyDetail();
   $('campaign').value=state.campaign;document.querySelectorAll('#levels button').forEach(b=>b.classList.toggle('active',b.dataset.level===state.level));renderBreadcrumb();
+}
+function dailyValue(row,key){const source=['spend','impressions','clicks','views'].includes(key)?state.data.sources.ads:key==='leads'?state.data.sources.leads:null;return source&&(row.date<source.start||row.date>source.end)?null:row[key];}
+function renderDailyDetail(){
+  $('dailyMetricsHead').innerHTML='<tr><th scope="col">Data</th>'+dailyMetricDefs.map(([key,label,color])=>`<th scope="col" style="--series:${color}"><button type="button" data-daily-metric="${key}" aria-pressed="${state.dailyMetrics.includes(key)}" aria-controls="dailyMetricChart" title="Adicionar ou remover ${esc(label)} no gráfico">${label}<span class="daily-select-dot" aria-hidden="true"></span></button></th>`).join('')+'</tr>';
+  $('dailyBody').innerHTML=[...state.daily].reverse().map(row=>`<tr><th scope="row"><time datetime="${row.date}" title="${longDate(row.date)}">${dateValue(row.date).toLocaleDateString('pt-BR',{timeZone:'UTC',day:'2-digit',month:'short'})}</time></th>${dailyMetricDefs.map(([key])=>`<td${['leads','freeTrials','sales'].includes(key)?' class="daily-count"':''}>${fmt(key,dailyValue(row,key))}</td>`).join('')}</tr>`).join('');
+  renderDailyMetricChart();
+}
+function toggleDailyMetric(key){if(!dailyMetricDefs.some(([k])=>k===key))return;state.dailyMetrics=state.dailyMetrics.includes(key)?state.dailyMetrics.filter(k=>k!==key):[...state.dailyMetrics,key];renderDailyMetricChart();}
+function renderDailyMetricChart(){
+  const el=$('dailyMetricChart'),defs=state.dailyMetrics.map(key=>dailyMetricDefs.find(([k])=>k===key)).filter(Boolean),normalized=defs.length>1;
+  document.querySelectorAll('[data-daily-metric]').forEach(button=>button.setAttribute('aria-pressed',String(state.dailyMetrics.includes(button.dataset.dailyMetric))));
+  $('clearDailyMetrics').hidden=!defs.length;
+  $('dailyMetricLegend').innerHTML=defs.map(([key,label,color])=>`<button type="button" data-remove-metric="${key}" style="--series:${color}" aria-label="Remover ${esc(label)} do gráfico"><i></i>${label}<span aria-hidden="true">×</span></button>`).join('');
+  const emptyChart=(title,message)=>`<div class="daily-metric-empty"><span aria-hidden="true">↗</span><strong>${title}</strong><small>${message}</small></div>`;
+  el.onpointermove=el.onpointerleave=el.onpointerdown=el.onkeydown=null;
+  if(!defs.length){el.removeAttribute('tabindex');el.removeAttribute('aria-label');$('dailyMetricChartTitle').textContent='Selecione métricas na tabela';$('dailyMetricChartHint').textContent='Clique em um ou mais cabeçalhos para comparar as séries.';el.innerHTML=emptyChart('Nenhuma métrica selecionada','Escolha quantas colunas quiser na tabela acima.');return;}
+  const series=defs.map(([key,label,color])=>{const values=state.daily.map(row=>dailyValue(row,key));return {key,label,color,values,max:Math.max(0,...values.filter(Number.isFinite))};});
+  $('dailyMetricChartTitle').textContent=normalized?`Evolução comparativa · ${series.length} métricas`:`Evolução de ${series[0].label}`;
+  $('dailyMetricChartHint').textContent=`${shortDate(state.start)} — ${shortDate(state.end)} · ${normalized?'Escala relativa: 100% = maior valor de cada métrica no período. Valores reais no detalhe.':'Valores reais por dia. Passe o mouse ou toque para ver os detalhes.'}`;
+  if(!series.some(s=>s.values.some(Number.isFinite))){el.removeAttribute('tabindex');el.innerHTML=emptyChart('Sem base para calcular as métricas','Selecione outro período ou outras colunas.');return;}
+  const W=Math.max(280,el.clientWidth),H=el.clientHeight,left=84,right=24,top=28,bottom=42,n=state.daily.length,maximum=normalized?100:Math.max(series[0].max*1.1,1);
+  const x=i=>left+(W-left-right)*(n===1?.5:i/(n-1)),scaled=(s,v)=>normalized?(s.max?v/s.max*100:0):v,y=v=>H-bottom-v/maximum*(H-top-bottom);
+  const path=s=>{let active=false;return s.values.map((v,i)=>{if(v==null){active=false;return '';}const prefix=active?'L':'M';active=true;return `${prefix}${x(i).toFixed(2)},${y(scaled(s,v)).toFixed(2)}`;}).join(' ');};
+  let svg=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Evolução diária: ${esc(series.map(s=>s.label).join(', '))}">`;
+  for(let i=0;i<5;i++){const value=maximum*i/4,yy=y(value);svg+=`<line class="gridline" x1="${left}" y1="${yy}" x2="${W-right}" y2="${yy}"/><text x="${left-10}" y="${yy+3}" text-anchor="end">${esc(normalized?`${value}%`:fmt(series[0].key,value))}</text>`;}
+  for(const s of series){svg+=`<path class="daily-series-line" data-series="${s.key}" stroke="${s.color}" d="${path(s)}"/>`;if(n<=60)s.values.forEach((v,i)=>{if(v!=null)svg+=`<circle cx="${x(i)}" cy="${y(scaled(s,v))}" r="${n===1?4:2.5}" fill="${s.color}"><title>${longDate(state.daily[i].date)} · ${esc(s.label)}: ${esc(fmt(s.key,v))}</title></circle>`;});}
+  const tickCount=W<550?3:Math.min(8,n),ticks=new Set([0,n-1,...Array.from({length:tickCount},(_,i)=>Math.round((n-1)*i/Math.max(1,tickCount-1)))]);
+  for(const i of ticks)svg+=`<text x="${x(i)}" y="${H-14}" text-anchor="middle">${shortDate(state.daily[i].date)}</text>`;
+  svg+=`<line class="daily-hover-line" x1="${left}" x2="${left}" y1="${top}" y2="${H-bottom}" visibility="hidden"/></svg><div class="chart-tooltip daily-chart-tooltip" role="status"></div>`;
+  el.innerHTML=svg;el.tabIndex=0;el.setAttribute('aria-label','Gráfico das métricas selecionadas. Use as setas esquerda e direita para consultar os dias.');
+  const tooltip=el.querySelector('.chart-tooltip'),hover=el.querySelector('.daily-hover-line');let active=0;
+  const show=(index,clientX)=>{active=index;tooltip.innerHTML=`<strong>${longDate(state.daily[index].date)}</strong>${series.map(s=>`<div class="daily-tooltip-row"><span><i style="background:${s.color}"></i>${s.label}</span><b>${esc(fmt(s.key,s.values[index]))}</b></div>`).join('')}`;tooltip.style.display='block';tooltip.style.left=`${Math.max(4,Math.min(el.clientWidth-tooltip.offsetWidth-4,clientX??x(index)+12))}px`;tooltip.style.top='10px';hover.setAttribute('visibility','visible');hover.setAttribute('x1',x(index));hover.setAttribute('x2',x(index));};
+  const pointer=e=>{if(e.target.closest('.chart-tooltip'))return;const chart=el.querySelector('svg'),point=new DOMPoint(e.clientX,e.clientY).matrixTransform(chart.getScreenCTM().inverse());const index=Math.max(0,Math.min(n-1,Math.round((point.x-left)/(W-left-right)*(n-1))));show(index,e.clientX-el.getBoundingClientRect().left+12);};
+  const hide=()=>{tooltip.style.display='none';hover.setAttribute('visibility','hidden');};
+  el.onpointermove=pointer;el.onpointerdown=pointer;el.onpointerleave=hide;el.onblur=hide;
+  el.onkeydown=e=>{if(e.key==='Escape'){hide();return;}if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();show(e.key==='Home'?0:e.key==='End'?n-1:Math.max(0,Math.min(n-1,active+(e.key==='ArrowRight'?1:-1))));};
 }
 function renderAttribution(rows){const counts={ad:0,adset:0,campaign:0,no_utm:0,unmatched:0,conflict:0};for(const row of rows)counts[row.attribution]=(counts[row.attribution]||0)+row.leads;const total=sum(rows).leads,matched=counts.ad+counts.adset+counts.campaign,percent=ratio(matched,total,100);$('matchRate').textContent=`${fmt('ctr',percent)} atribuídos`;$('attribution').innerHTML=`<div class="match-track"><span style="width:${percent||0}%"></span></div><p class="attribution-summary">${integer.format(matched)} de ${integer.format(total)} inscrições no período${state.campaign?' e no filtro selecionado':''}.</p>`+[['ad','Anúncio identificado'],['adset','Somente conjunto identificado'],['campaign','Somente campanha identificada'],['no_utm','Sem UTM'],['unmatched','UTM sem correspondência'],['conflict','IDs conflitantes']].map(([k,label])=>`<div class="attribution-row"><span>${label}</span><b>${integer.format(counts[k])}</b></div>`).join('');}
 function renderBreadcrumb(){let html='<button data-reset="all">Todas as campanhas</button>';for(const level of ['campaign','adset','ad'])if(state[level]){const item=state.data.dimensions[level][state[level]];html+=`<span>›</span><button data-reset="${level}" title="${esc(item?.name)}">${esc(item?.name||state[level])}</button>`;}$('breadcrumb').innerHTML=html;}
@@ -91,8 +136,12 @@ $('tableBody').onclick=e=>{const b=e.target.closest('[data-drill]');if(!b)return
 $('breadcrumb').onclick=e=>{const b=e.target.closest('[data-reset]');if(!b)return;const level=b.dataset.reset;if(level==='all'){state.campaign=state.adset=state.ad='';state.level='campaign';}else if(level==='campaign'){state.adset=state.ad='';state.level='adset';}else if(level==='adset'){state.ad='';state.level='ad';}state.search='';$('search').value='';render();};
 $('search').oninput=e=>{state.search=e.target.value;if(state.data)renderTable();};
 $('chartMetric').onchange=e=>{state.chart=e.target.value;if(state.data)renderChart();};
+$('dailyMetricsHead').onclick=e=>{const button=e.target.closest('[data-daily-metric]');if(button&&state.data)toggleDailyMetric(button.dataset.dailyMetric);};
+$('dailyMetricLegend').onclick=e=>{const button=e.target.closest('[data-remove-metric]');if(button)toggleDailyMetric(button.dataset.removeMetric);};
+$('clearDailyMetrics').onclick=()=>{state.dailyMetrics=[];renderDailyMetricChart();};
 $('refresh').onclick=load;
 $('export').onclick=()=>{if(!state.data)return;const cell=v=>'"'+String(v??'').replace(/^[=+@-]/,"'$&").replace(/"/g,'""')+'"';const rows=[['Nome','ID',...columns.slice(1).map(k=>labels[k])],...state.tableRows.map(r=>[r.name,r.id,...columns.slice(1).map(k=>r[k]==null?'':Number(r[k].toFixed(4)))])];const blob=new Blob(['\ufeff'+rows.map(r=>r.map(cell).join(';')).join('\r\n')],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`dollarteams-${state.level}-${state.start}-${state.end}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)load();});
 new ResizeObserver(()=>{if(state.data&&state.daily.length)renderEfficiency();}).observe($('efficiencyChart'));
+new ResizeObserver(()=>{if(state.data&&state.daily.length)renderDailyMetricChart();}).observe($('dailyMetricChart'));
 setInterval(load,5*60*1000);setInterval(freshness,60*1000);load();
