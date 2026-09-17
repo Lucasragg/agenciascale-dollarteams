@@ -40,6 +40,8 @@ As fontes precisam continuar acessíveis por link. A atualização do dashboard 
 
 ## Desenvolvimento
 
+Os 17 cards compactos seguem a ordem do funil: Investimento, Impressões, Cliques, CPM, CTR, CPC, Landing page views, Connect rate, Leads, Custo por lead, Free Trials, Custo por Free Trial, Paid Trial, Custo por Paid Trial, Conversão página → lead, Conversão lead → Free Trial e Conversão Free Trial → Paid. O custo por Paid Trial usa o mesmo cálculo de CAC. Cada card inclui uma descrição curta e comparação com o período anterior. Em desktop amplo são seis cards por linha; a grade se adapta a telas menores.
+
 O gráfico **Eficiência · CPL por dia**, abaixo da tabela de Decisão de mídia, acompanha o período e a seleção de campanha, conjunto ou anúncio. O eixo X mostra datas e o eixo Y mostra CPL em US$. O tooltip informa CPL, investimento e leads daquele dia, com comparação ao período anterior. Dias sem leads ou sem cobertura não são desenhados como CPL zero.
 
 Python 3.12 ou superior; apenas biblioteca padrão.
