@@ -75,8 +75,16 @@ def fetch_source(kind):
     error = None
     for attempt in range(4):
         try:
-            params = {'tqx':'out:csv', 'gid':gid, 'headers':1, 'tq':query, '_cb':time.time_ns()}
-            url = f'https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?' + urllib.parse.urlencode(params)
+            if kind == 'leads':
+                # GViz infers a numeric type for mixed UTM columns and silently
+                # blanks legacy campaign/creative names. Native CSV keeps both.
+                # A single rectangular snapshot keeps dates and UTMs aligned;
+                # discard all intermediate columns immediately below.
+                params = {'format':'csv', 'gid':gid, 'range':'J:AG', '_cb':time.time_ns()}
+                url = f'https://docs.google.com/spreadsheets/d/{sid}/export?' + urllib.parse.urlencode(params)
+            else:
+                params = {'tqx':'out:csv', 'gid':gid, 'headers':1, 'tq':query, '_cb':time.time_ns()}
+                url = f'https://docs.google.com/spreadsheets/d/{sid}/gviz/tq?' + urllib.parse.urlencode(params)
             req = urllib.request.Request(url, headers={'User-Agent':'ScaleDollarTeams/1.0', 'Cache-Control':'no-cache'})
             with urllib.request.urlopen(req, timeout=90) as response:
                 content = response.read().decode('utf-8-sig')
@@ -85,7 +93,7 @@ def fetch_source(kind):
             reader = csv.DictReader(io.StringIO(content))
             if not set(REQUIRED[kind]).issubset(reader.fieldnames or []):
                 raise ValueError(f'{kind}: required headers are missing')
-            rows = [{str(k).strip(): str(v or '').strip() for k,v in row.items() if k} for row in reader]
+            rows = [{k: str(row.get(k) or '').strip() for k in REQUIRED[kind]} for row in reader]
             rows = [row for row in rows if any(row.values())]
             if not rows:
                 raise ValueError(f'{kind}: source is empty; preserving previous deployment')
