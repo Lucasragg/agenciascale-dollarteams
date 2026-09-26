@@ -12,7 +12,7 @@ from build_data import build, day
 METRICS = ('freeTrials', 'sales', 'cohortContacts', 'trialContacts', 'trialSalesContacts', 'dateIssues')
 
 
-def prepare_snapshot(actions, leads, ads):
+def prepare_snapshot(actions, leads, ads, observation_end=None):
     result = audit(actions, leads, ads)
     records = []
     for item in result['records']:
@@ -34,17 +34,18 @@ def prepare_snapshot(actions, leads, ads):
     cohort_groups = Counter()
     cohort_start = min(day(l['Registration date']) for l in leads if l.get('Registration date'))
     snapshot_end = max(day(a['Action Date']) for a in actions)
+    cohort_end = observation_end or snapshot_end
     for email, entries in registrations.items():
         origins = {resolve(tuple(str(l.get(k) or '') for k in UTMS)) for l in entries}
         if len(origins) != 1:
             continue
         c, s, a, attribution = next(iter(origins))
         registration_date = min(day(l['Registration date']) for l in entries)
-        if registration_date > snapshot_end:
+        if registration_date > cohort_end:
             continue
         # Same-day times remain uncertain; exclude actions on earlier dates.
-        trials = [day(x['Action Date']) for x in conversions[email] if x['Event Type'] == 'Free Trial' and day(x['Action Date']) >= registration_date]
-        sales = [day(x['Action Date']) for x in conversions[email] if x['Event Type'] == 'Paid Trial' and day(x['Action Date']) >= registration_date]
+        trials = [day(x['Action Date']) for x in conversions[email] if x['Event Type'] == 'Free Trial' and registration_date <= day(x['Action Date']) <= cohort_end]
+        sales = [day(x['Action Date']) for x in conversions[email] if x['Event Type'] == 'Paid Trial' and registration_date <= day(x['Action Date']) <= cohort_end]
         key = (registration_date, c, s, a, attribution)
         cohort_groups[key + ('cohortContacts',)] += 1
         if trials:
@@ -101,8 +102,28 @@ def merge_impact(dataset, snapshot):
                     raise ValueError('Impact media hierarchy changed')
         dataset['records'].append(row)
     dataset['impact'] = {k: snapshot[k] for k in ('importedAt', 'start', 'end', 'cohortStart', 'source', 'salesDefinition', 'provisional')}
+    if snapshot.get('mode') == 'sheets':
+        dataset['impact']['mode'] = 'sheets'
+        for key in ('completeStart','completeEnd'):
+            dataset['impact'][key] = day(snapshot[key])
+        def counts(data, keys):
+            result = {}
+            for key in keys:
+                value=data[key]
+                if isinstance(value,bool) or not isinstance(value,int) or value<0:
+                    raise ValueError('Invalid public conversion diagnostic')
+                result[key]=value
+            return result
+        dataset['impact']['diagnostics'] = counts(snapshot['diagnostics'], ('sourceRows','uniqueActions','duplicatesRemoved','collidingIds','otherEventsExcluded','statusesExcluded'))
+        dataset['impact']['statuses'] = counts(snapshot['statuses'], ('Pending','Approved'))
+        dataset['impact']['tabs'] = {tab:{**counts(snapshot['tabs'][tab],('rows','freeTrials','paidTrials')),
+                                        'start':day(snapshot['tabs'][tab]['start']), 'end':day(snapshot['tabs'][tab]['end'])}
+                                   for tab in ('Impact','Recuperacao')}
+        dataset['impact']['eventTotals'] = {event:counts(snapshot['eventTotals'][event], ('actions','emailMatched','noEmailMatch','ambiguousOrigin','mediaCandidates'))
+                                          for event in ('freeTrials','paidTrials')}
     dataset['schema'] = 2
     dataset['coverage']['start'] = min(dataset['coverage']['start'], snapshot['start'])
+    dataset['coverage']['end'] = max(dataset['coverage']['end'], snapshot['end'])
     dataset['records'].sort(key=lambda r: (r['date'], r['campaign'], r['adset'], r['ad']))
     return dataset
 

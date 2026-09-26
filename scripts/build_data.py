@@ -70,7 +70,7 @@ def day(value):
             pass
     raise ValueError('Unsupported source date format')
 
-def fetch_source(kind):
+def fetch_source(kind, include_email=False):
     sid, gid, query = SOURCES[kind]
     error = None
     for attempt in range(4):
@@ -80,7 +80,7 @@ def fetch_source(kind):
                 # blanks legacy campaign/creative names. Native CSV keeps both.
                 # A single rectangular snapshot keeps dates and UTMs aligned;
                 # discard all intermediate columns immediately below.
-                params = {'format':'csv', 'gid':gid, 'range':'J:AG', '_cb':time.time_ns()}
+                params = {'format':'csv', 'gid':gid, 'range':'E:AG' if include_email else 'J:AG', '_cb':time.time_ns()}
                 url = f'https://docs.google.com/spreadsheets/d/{sid}/export?' + urllib.parse.urlencode(params)
             else:
                 params = {'tqx':'out:csv', 'gid':gid, 'headers':1, 'tq':query, '_cb':time.time_ns()}
@@ -91,9 +91,10 @@ def fetch_source(kind):
             if '<html' in content[:300].lower():
                 raise ValueError('Source returned HTML instead of CSV')
             reader = csv.DictReader(io.StringIO(content))
-            if not set(REQUIRED[kind]).issubset(reader.fieldnames or []):
+            fields = REQUIRED[kind] + (['Email'] if kind == 'leads' and include_email else [])
+            if not set(fields).issubset(reader.fieldnames or []):
                 raise ValueError(f'{kind}: required headers are missing')
-            rows = [{k: str(row.get(k) or '').strip() for k in REQUIRED[kind]} for row in reader]
+            rows = [{k: str(row.get(k) or '').strip() for k in fields} for row in reader]
             rows = [row for row in rows if any(row.values())]
             if not rows:
                 raise ValueError(f'{kind}: source is empty; preserving previous deployment')
@@ -211,11 +212,18 @@ def main():
     args = parser.parse_args()
     if args.local:
         inputs = [json.loads((ROOT/'.local'/f'{kind}.json').read_text(encoding='utf-8')) for kind in SOURCES]
+        snapshot = json.loads((ROOT/'data'/'impact.json').read_text(encoding='utf-8'))
     else:
-        with ThreadPoolExecutor(max_workers=2) as pool: inputs = list(pool.map(fetch_source, SOURCES))
+        from live_trials import fetch_actions, prepare_live_snapshot, TABS
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            ads_future = pool.submit(fetch_source, 'ads')
+            leads_future = pool.submit(fetch_source, 'leads', include_email=True)
+            action_futures = {tab:pool.submit(fetch_actions,tab) for tab in TABS}
+            inputs = [ads_future.result(), leads_future.result()]
+            actions = {tab:future.result() for tab,future in action_futures.items()}
+        snapshot = prepare_live_snapshot(actions, inputs[1], inputs[0])
     dataset = build(*inputs)
     from impact_data import merge_impact
-    snapshot = json.loads((ROOT/'data'/'impact.json').read_text(encoding='utf-8'))
     dataset = merge_impact(dataset, snapshot)
     output = ROOT/'dist'
     output.mkdir(exist_ok=True)
@@ -227,6 +235,6 @@ def main():
         index = index.replace(f'{name}?v=BUILD', f'{name}?v={digest}')
     (output/'index.html').write_text(index, encoding='utf-8')
     (output/'data.json').write_text(json.dumps(dataset, ensure_ascii=False, separators=(',',':'), allow_nan=False), encoding='utf-8')
-    print(json.dumps({'generatedAt':dataset['generatedAt'], 'sources':dataset['sources'], 'audit':dataset['audit']}, ensure_ascii=False))
+    print(json.dumps({'generatedAt':dataset['generatedAt'], 'sources':dataset['sources'], 'audit':dataset['audit'], 'conversions':dataset['impact']}, ensure_ascii=False))
 
 if __name__ == '__main__': main()
