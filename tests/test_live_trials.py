@@ -7,16 +7,58 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
-from live_trials import normalize_actions, prepare_live_snapshot, fetch_actions, FIELDS
+from live_trials import normalize_actions, prepare_live_snapshot, fetch_actions, FIELDS, commission_cents
 from build_data import build, fetch_source, REQUIRED
 from impact_data import merge_impact
 from test_build import lead, ad
 from test_impact_attribution import action
 
 def trial(ident='trial-1', email='never-publish@example.test', date='2026-09-17 12:00:00', event='Free Trial', status='Pending'):
-    return {**action(email, ident, date), 'Brand':'Shopify', 'Event Type':event, 'Status':status}
+    return {**action(email, ident, date), 'Brand':'Shopify', 'Event Type':event, 'Status':status,'Action Earnings':'0'}
 
 class LiveTrialsTests(unittest.TestCase):
+    def test_confirmed_commission_scale(self):
+        for value in ('1450000','1.450.000','1450000.0000','1.450.000,00'):
+            self.assertEqual(commission_cents(value),14500)
+        self.assertEqual(commission_cents('950000'),9500)
+        self.assertEqual(commission_cents('1.000'),10)
+        self.assertEqual(commission_cents('100'),1)
+        for value in ('','NaN','-100','145.0000','1.450.00'):
+            with self.assertRaises(ValueError):commission_cents(value)
+
+    def test_revenue_includes_all_commissions_but_preserves_trial_counts(self):
+        paid={**trial('paid',event='Paid Trial'),'Action Earnings':'1.450.000'}
+        full={**trial('full',event='Full Price Shop',status='Approved',email='outside@example.test'),'Action Earnings':'3.250.000'}
+        retained={**trial('retained',event='Retained Full Price Shops: 3 Mo',status='Approved'),'Action Earnings':'950000'}
+        declined={**trial('declined',event='Full Price Shop',status='Declined'),'Action Earnings':'4.000.000'}
+        sources={'Impact':[trial(),paid], 'Recuperacao':[paid,full,retained,declined]}
+        snapshot=prepare_live_snapshot(sources,[lead(),lead()],[ad()])
+        result=merge_impact(build([ad()],[lead()]),snapshot)
+        revenue=result['impact']['revenue']
+        self.assertEqual(revenue['totalCents'],56500)
+        self.assertEqual(revenue['attributedCents'],24000)
+        self.assertEqual(revenue['pendingCents'],14500)
+        self.assertEqual(revenue['approvedCents'],42000)
+        self.assertEqual(revenue['duplicatesRemoved'],1)
+        self.assertEqual(sum(r['revenueCents'] for r in result['records']),56500)
+        self.assertEqual(sum(r['revenueCents'] for r in result['records'] if r['campaign']),24000)
+        self.assertEqual(sum(r['freeTrials'] for r in result['records']),1)
+        self.assertEqual(sum(r['sales'] for r in result['records']),1)
+        self.assertNotIn('outside@example',json.dumps(result))
+
+    def test_conflicting_duplicate_earnings_fail(self):
+        a={**trial(),'Action Earnings':'1450000'}
+        b={**trial(),'Action Earnings':'950000'}
+        with self.assertRaisesRegex(ValueError,'Conflicting earnings'):
+            normalize_actions({'Impact':[a],'Recuperacao':[b]})
+
+    def test_revenue_uses_action_date_and_keeps_colliding_ids(self):
+        a={**trial('paid',event='Paid Trial'),'Action Earnings':'1450000'}
+        b={**trial('paid',event='Paid Trial',date='2026-09-18 15:00:00'),'Action Earnings':'950000'}
+        result=prepare_live_snapshot({'Impact':[a],'Recuperacao':[b]},[lead()],[ad()])
+        self.assertEqual(sum(r['revenueCents'] for r in result['records'] if r['date']=='2026-09-17'),14500)
+        self.assertEqual(sum(r['revenueCents'] for r in result['records'] if r['date']=='2026-09-18'),9500)
+
     def test_duplicate_across_tabs_is_counted_once(self):
         rows, tabs, audit=normalize_actions({'Impact':[trial(),trial()], 'Recuperacao':[trial(),trial('paid',event='Paid Trial')]})
         self.assertEqual(len(rows),2)

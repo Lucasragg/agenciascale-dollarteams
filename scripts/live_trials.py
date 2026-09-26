@@ -2,21 +2,44 @@
 import csv
 import io
 import json
+import re
 import time
 import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 from build_data import SOURCES, day, identifier
-from audit_impact_attribution import email_key
-from impact_data import prepare_snapshot
+from audit_impact_attribution import email_key, make_resolver, UTMS
+from impact_data import prepare_snapshot, METRICS
 
 TABS = {'Impact': '215288026', 'Recuperacao': '579566718'}
-FIELDS = ('Action Date', 'Action Id', 'Brand', 'Event Type', 'Status', 'Sub Id 3')
+FIELDS = ('Action Date', 'Action Id', 'Brand', 'Event Type', 'Status', 'Sub Id 3', 'Action Earnings')
 EVENTS = ('Free Trial', 'Paid Trial')
 ACCEPTED = {'Pending', 'Approved'}
 EXCLUDED = {'Reversed', 'Declined', 'Rejected'}
+
+def commission_cents(value):
+    """User-confirmed source scale: 1,450,000 stored units = USD 145.00.
+
+    Parse native CSV's pt-BR thousands groups explicitly, using Decimal, and
+    reject missing or sub-cent values rather than guessing a different scale.
+    """
+    raw = str(value).strip().replace('\xa0','').replace(' ','')
+    if re.fullmatch(r'\d{1,3}(?:\.\d{3})+(?:,\d+)?', raw):
+        raw = raw.replace('.','').replace(',','.')
+    elif re.fullmatch(r'\d+(?:,\d+)?',raw):
+        raw = raw.replace(',','.')
+    elif not re.fullmatch(r'\d+\.\d+',raw):
+        raise ValueError('Invalid commission amount')
+    try:
+        cents = Decimal(raw)/Decimal(100)  # divide 10,000, then convert to cents
+        if not cents.is_finite() or cents<0 or cents!=cents.to_integral_value():
+            raise ValueError('Commission scale must produce whole cents')
+        return int(cents)
+    except InvalidOperation:
+        raise ValueError('Invalid commission amount') from None
 
 def fetch_actions(tab):
     sid = SOURCES['leads'][0]
@@ -38,7 +61,7 @@ def fetch_actions(tab):
                 raise RuntimeError(f'Failed reading {tab}; preserving previous deployment') from None
             time.sleep(2**attempt)
 
-def normalize_actions(sources):
+def normalize_actions(sources, all_events=False):
     """Action IDs in Sheets collide. Preserve distinct dates/emails/events.
 
     Deduplicate the same ID + timestamp + brand + event + normalized email
@@ -69,7 +92,7 @@ def normalize_actions(sources):
             status_counts[status] += 1
             if event not in EVENTS:
                 ignored['otherEvents'] += 1
-                continue
+                if not all_events: continue
             if status not in ACCEPTED | EXCLUDED: raise ValueError('Unknown conversion status')
             ident = identifier(source['Action Id'])
             key = (ident, timestamp, source['Brand'], event, email_key(source['Sub Id 3']))
@@ -80,13 +103,16 @@ def normalize_actions(sources):
                 ignored['excludedStatuses'] += 1
                 continue
             accepted_dates.append(day(timestamp))
+            cents = commission_cents(source['Action Earnings'])
             ids[ident].add(key)
             if key in seen:
                 if seen[key]['Status'] != status:
                     raise ValueError('Conflicting status for the same conversion; reconcile the source')
+                if seen[key]['commissionCents'] != cents:
+                    raise ValueError('Conflicting earnings for the same action; reconcile the source')
                 duplicates += 1
                 continue
-            seen[key] = {**source, 'Action Date':timestamp, 'Sub Id 3':key[-1]}
+            seen[key] = {**source, 'Action Date':timestamp, 'Sub Id 3':key[-1], 'commissionCents':cents}
         if not accepted_dates: raise ValueError('No valid trial events in a conversion tab')
         tab_stats[tab] = {'rows':len(rows),'start':min(accepted_dates),'end':max(accepted_dates),
                           'freeTrials':event_counts['Free Trial'],'paidTrials':event_counts['Paid Trial']}
@@ -101,6 +127,38 @@ def normalize_actions(sources):
                    'otherEventsExcluded':ignored['otherEvents'],
                    'statusesExcluded':ignored['excludedStatuses']}
     return actions, tab_stats, diagnostics
+
+def revenue_snapshot(sources, leads, ads):
+    actions, tabs, diagnostics = normalize_actions(sources, all_events=True)
+    by_email = defaultdict(list)
+    for lead in leads:
+        if lead.get('Registration date') and email_key(lead.get('Email')):
+            by_email[email_key(lead['Email'])].append(lead)
+    resolve, origins, grouped = make_resolver(ads), {}, Counter()
+    totals = {'totalCents':0,'attributedCents':0,'pendingCents':0,'approvedCents':0}
+    for action in actions:
+        cents=action['commissionCents']
+        totals['totalCents']+=cents
+        totals['pendingCents' if action['Status']=='Pending' else 'approvedCents']+=cents
+        if not cents: continue
+        email=email_key(action['Sub Id 3'])
+        if email not in origins:
+            candidates=by_email.get(email,[])
+            matches={resolve(tuple(str(row.get(k) or '') for k in UTMS)) for row in candidates}
+            origins[email]=next(iter(matches)) if len(matches)==1 else ('','','','ambiguous_origin' if matches else 'no_email_match')
+        campaign, adset, ad, attribution = origins[email]
+        if campaign: totals['attributedCents']+=cents
+        grouped[(day(action['Action Date']),campaign,adset,ad,attribution)]+=cents
+    records=[]
+    for key,cents in grouped.items():
+        record=dict(zip(('date','campaign','adset','ad','attribution'),key),**{k:0 for k in METRICS})
+        record['revenueCents']=cents
+        records.append(record)
+    metadata={**totals,'currency':'USD','sourceScale':10000,
+              'start':min(tab['start'] for tab in tabs.values()),'end':max(tab['end'] for tab in tabs.values()),
+              'completeStart':max(tab['start'] for tab in tabs.values()),'completeEnd':min(tab['end'] for tab in tabs.values()),
+              'duplicatesRemoved':diagnostics['duplicatesRemoved']}
+    return records, metadata, {email_key(row['Sub Id 3']) for row in actions}
 
 def prepare_live_snapshot(sources, leads, ads):
     actions, tab_stats, diagnostics = normalize_actions(sources)
@@ -122,8 +180,10 @@ def prepare_live_snapshot(sources, leads, ads):
                                           ('actions','emailMatched','noEmailMatch','ambiguousOrigin','mediaCandidates')}
     statuses = Counter(a['Status'] for a in actions)
     snapshot['statuses'] = {key:statuses[key] for key in sorted(ACCEPTED)}
+    revenue_records, snapshot['revenue'], revenue_emails = revenue_snapshot(sources, leads, ads)
+    snapshot['records'].extend(revenue_records)
     serialized = json.dumps(snapshot,ensure_ascii=False).lower()
-    emails = {email_key(row.get('Email')) for row in leads} | {email_key(row['Sub Id 3']) for row in actions}
+    emails = {email_key(row.get('Email')) for row in leads} | revenue_emails
     if any(email and email in serialized for email in emails):
         raise ValueError('Personal data detected in aggregate snapshot')
     return snapshot

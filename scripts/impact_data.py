@@ -9,7 +9,7 @@ from pathlib import Path
 from audit_impact_attribution import audit, email_key, make_resolver, UTMS
 from build_data import build, day
 
-METRICS = ('freeTrials', 'sales', 'cohortContacts', 'trialContacts', 'trialSalesContacts', 'dateIssues')
+METRICS = ('freeTrials', 'sales', 'cohortContacts', 'trialContacts', 'trialSalesContacts', 'dateIssues', 'revenueCents')
 
 
 def prepare_snapshot(actions, leads, ads, observation_end=None):
@@ -87,7 +87,7 @@ def merge_impact(dataset, snapshot):
         row = {k: item[k] for k in ('date', 'campaign', 'adset', 'ad', 'attribution')}
         row.update({k: 0 for k in ('spend', 'impressions', 'clicks', 'views', 'leads')})
         for metric in METRICS:
-            value = item[metric]
+            value = item.get(metric,0) if metric == 'revenueCents' else item[metric]
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError('Invalid Impact count')
             row[metric] = value
@@ -121,6 +121,16 @@ def merge_impact(dataset, snapshot):
                                    for tab in ('Impact','Recuperacao')}
         dataset['impact']['eventTotals'] = {event:counts(snapshot['eventTotals'][event], ('actions','emailMatched','noEmailMatch','ambiguousOrigin','mediaCandidates'))
                                           for event in ('freeTrials','paidTrials')}
+        revenue=snapshot.get('revenue')
+        if revenue:
+            if revenue['currency']!='USD' or revenue['sourceScale']!=10000:
+                raise ValueError('Unexpected revenue currency or scale')
+            dataset['impact']['revenue']={**counts(revenue,('totalCents','attributedCents','pendingCents','approvedCents','sourceScale','duplicatesRemoved')),
+                                         **{key:day(revenue[key]) for key in ('start','end','completeStart','completeEnd')},'currency':'USD'}
+            if sum(row['revenueCents'] for row in dataset['records']) != revenue['totalCents']:
+                raise ValueError('Revenue aggregates do not reconcile')
+            dataset['coverage']['start']=min(dataset['coverage']['start'],revenue['start'])
+            dataset['coverage']['end']=max(dataset['coverage']['end'],revenue['end'])
     dataset['schema'] = 2
     dataset['coverage']['start'] = min(dataset['coverage']['start'], snapshot['start'])
     dataset['coverage']['end'] = max(dataset['coverage']['end'], snapshot['end'])
