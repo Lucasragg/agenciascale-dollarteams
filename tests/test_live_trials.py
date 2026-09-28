@@ -17,6 +17,62 @@ def trial(ident='trial-1', email='never-publish@example.test', date='2026-09-17 
     return {**action(email, ident, date), 'Brand':'Shopify', 'Event Type':event, 'Status':status,'Action Earnings':'0'}
 
 class LiveTrialsTests(unittest.TestCase):
+    def test_acquisition_moves_cross_month_trials_and_revenue_but_preserves_events(self):
+        registration={**lead(),'Registration date':'Mon, 31 Aug 2026, 10:00 AM'}
+        free=trial(date='2026-09-02 12:00:00')
+        paid={**trial('paid',event='Paid Trial',date='2026-09-20 12:00:00'),'Action Earnings':'1450000'}
+        snapshot=prepare_live_snapshot({'Impact':[paid],'Recuperacao':[free]},[registration],[ad()])
+        data=merge_impact(build([ad()],[registration]),snapshot)
+        acquired=[r for r in data['acquisitionRecords'] if r['date']=='2026-08-31']
+        self.assertEqual(sum(r['sales'] for r in acquired),1)
+        self.assertEqual(sum(r['freeTrials'] for r in acquired),1)
+        self.assertEqual(sum(r['revenueCents'] for r in acquired),14500)
+        self.assertEqual(sum(r['trialSalesContacts'] for r in acquired),1)
+        self.assertEqual(sum(r['sales'] for r in data['records'] if r['date']=='2026-09-20'),1)
+        self.assertEqual(sum(r['sales'] for r in data['acquisitionRecords'] if r['date']=='2026-09-20'),0)
+        self.assertEqual(sum(r['spend'] for r in data['acquisitionRecords']),sum(r['spend'] for r in data['records']))
+        self.assertEqual(sum(r['leads'] for r in data['acquisitionRecords']),1)
+        self.assertNotIn('never-publish',json.dumps(data))
+
+    def test_acquisition_excludes_unknown_and_prior_events_without_inventing_dates(self):
+        prior={**trial('prior',date='2026-09-15 12:00:00',event='Paid Trial'),'Action Earnings':'1450000'}
+        unknown={**trial('unknown',email='missing@example.test',event='Paid Trial'),'Action Earnings':'950000'}
+        snapshot=prepare_live_snapshot({'Impact':[prior],'Recuperacao':[unknown,trial()]},[lead()],[ad()])
+        a=snapshot['acquisition']
+        self.assertEqual(a['totals']['sales'],0)
+        self.assertEqual(a['excluded']['beforeRegistration'],{'freeTrials':0,'sales':1,'revenueCents':14500})
+        self.assertEqual(a['excluded']['noEmailMatch'],{'freeTrials':0,'sales':1,'revenueCents':9500})
+        self.assertEqual(sum(r['sales'] for r in snapshot['records']),2)
+
+    def test_acquisition_uses_first_registration_and_deduplicates_contacts_not_actions(self):
+        first={**lead(),'Registration date':'Tue, 15 Sep 2026, 10:00 AM'}
+        paid={**trial('paid',event='Paid Trial'),'Action Earnings':'1450000'}
+        snapshot=prepare_live_snapshot({'Impact':[trial(),paid],'Recuperacao':[paid,trial('free-2')]},[lead(),first],[ad()])
+        a=snapshot['acquisition']['totals']
+        self.assertEqual((a['cohortContacts'],a['trialContacts'],a['trialSalesContacts']),(1,1,1))
+        self.assertEqual((a['freeTrials'],a['sales'],a['revenueCents']),(2,1,14500))
+        self.assertTrue(all(r['date']=='2026-09-15' for r in snapshot['acquisitionRecords']))
+
+    def test_acquisition_separates_ambiguous_origin_and_known_signup_without_utm(self):
+        other=lead(c='44444444444444',s='55555555555555',a='66666666666666')
+        no_utm={**lead(),'Email':'no-utm@example.test',**{k:'' for k in ('UTM source','UTM medium','UTM campaign','UTM term','UTM content')}}
+        paid={**trial('paid',event='Paid Trial',email=no_utm['Email']),'Action Earnings':'1450000'}
+        sources={'Impact':[trial()],'Recuperacao':[paid]}
+        snapshot=prepare_live_snapshot(sources,[lead(),other,no_utm],[ad(),ad(c='44444444444444',s='55555555555555',a='66666666666666')])
+        self.assertEqual(snapshot['acquisition']['excluded']['ambiguousOrigin']['freeTrials'],1)
+        self.assertEqual(snapshot['acquisition']['totals']['revenueCents'],14500)
+        self.assertEqual(sum(r['revenueCents'] for r in snapshot['acquisitionRecords'] if r['campaign']),0)
+
+    def test_new_paid_event_updates_old_acquisition_day_without_duplicate_leads(self):
+        sources={'Impact':[trial()],'Recuperacao':[trial()]}
+        before=prepare_live_snapshot(sources,[lead()],[ad()])
+        sources['Impact'].append(trial('late-paid',event='Paid Trial',date='2026-09-25 12:00:00'))
+        after=prepare_live_snapshot(sources,[lead()],[ad()])
+        self.assertEqual(before['acquisition']['totals']['sales'],0)
+        self.assertEqual(after['acquisition']['totals']['sales'],1)
+        self.assertEqual(after['acquisition']['totals']['cohortContacts'],1)
+        self.assertEqual(next(r['date'] for r in after['acquisitionRecords'] if r['sales']),'2026-09-16')
+
     def test_confirmed_commission_scale(self):
         for value in ('1450000','1.450.000','1450000.0000','1.450.000,00'):
             self.assertEqual(commission_cents(value),14500)

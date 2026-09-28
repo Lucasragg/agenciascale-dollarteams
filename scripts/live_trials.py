@@ -160,6 +160,61 @@ def revenue_snapshot(sources, leads, ads):
               'duplicatesRemoved':diagnostics['duplicatesRemoved']}
     return records, metadata, {email_key(row['Sub Id 3']) for row in actions}
 
+def acquisition_snapshot(sources, leads, ads):
+    """Group conversions by first available unambiguous registration date."""
+    actions, tabs, _ = normalize_actions(sources, all_events=True)
+    registrations = defaultdict(list)
+    for lead in leads:
+        if lead.get('Registration date') and email_key(lead.get('Email')):
+            registrations[email_key(lead['Email'])].append(lead)
+    resolve, origins, groups = make_resolver(ads), {}, {}
+    def bucket(key):
+        if key not in groups:
+            groups[key] = dict(zip(('date','campaign','adset','ad','attribution'),key), **{k:0 for k in METRICS})
+        return groups[key]
+    for email, entries in registrations.items():
+        resolved = {resolve(tuple(str(row.get(k) or '') for k in UTMS)) for row in entries}
+        if len(resolved) != 1:
+            origins[email] = None
+            continue
+        origin = next(iter(resolved))
+        if origin[3] == 'conflict':
+            origins[email] = None
+            continue
+        key = (min(day(row['Registration date']) for row in entries), *origin)
+        origins[email] = key
+        bucket(key)['cohortContacts'] += 1
+    excluded = {reason:{'freeTrials':0,'sales':0,'revenueCents':0} for reason in ('noEmailMatch','ambiguousOrigin','beforeRegistration')}
+    progression = defaultdict(lambda: {'Free Trial':[], 'Paid Trial':[]})
+    for action in actions:
+        email=email_key(action['Sub Id 3'])
+        key=origins.get(email)
+        event_date=day(action['Action Date'])
+        reason=('noEmailMatch' if email not in origins else 'ambiguousOrigin' if key is None else 'beforeRegistration' if event_date<key[0] else '')
+        metric={'Free Trial':'freeTrials','Paid Trial':'sales'}.get(action['Event Type'])
+        target=excluded[reason] if reason else bucket(key)
+        if metric:target[metric]+=1
+        target['revenueCents']+=action['commissionCents']
+        if not reason and metric:progression[email][action['Event Type']].append(event_date)
+    for email, events in progression.items():
+        trials, sales=events['Free Trial'],events['Paid Trial']
+        if trials:
+            target=bucket(origins[email])
+            target['trialContacts']+=1
+            if any(sale>=min(trials) for sale in sales):target['trialSalesContacts']+=1
+    totals={metric:sum(row[metric] for row in groups.values()) for metric in METRICS}
+    for metric,event in [('freeTrials','Free Trial'),('sales','Paid Trial')]:
+        if totals[metric]+sum(item[metric] for item in excluded.values())!=sum(a['Event Type']==event for a in actions):
+            raise ValueError('Acquisition events do not reconcile')
+    if totals['revenueCents']+sum(item['revenueCents'] for item in excluded.values())!=sum(a['commissionCents'] for a in actions):
+        raise ValueError('Acquisition revenue does not reconcile')
+    metadata={'dateBasis':'registration','start':min(day(row['Registration date']) for row in leads),
+              'end':max(day(row['Registration date']) for row in leads),
+              'observedThrough':max(t['end'] for t in tabs.values()),'commonThrough':min(t['end'] for t in tabs.values()),
+              'totals':totals,'excluded':excluded}
+    return list(groups.values()),metadata
+
+
 def prepare_live_snapshot(sources, leads, ads):
     actions, tab_stats, diagnostics = normalize_actions(sources)
     if any('Email' not in row for row in leads): raise ValueError('Lead email column is required for conversion matching')
@@ -182,6 +237,7 @@ def prepare_live_snapshot(sources, leads, ads):
     snapshot['statuses'] = {key:statuses[key] for key in sorted(ACCEPTED)}
     revenue_records, snapshot['revenue'], revenue_emails = revenue_snapshot(sources, leads, ads)
     snapshot['records'].extend(revenue_records)
+    snapshot['acquisitionRecords'],snapshot['acquisition']=acquisition_snapshot(sources,leads,ads)
     serialized = json.dumps(snapshot,ensure_ascii=False).lower()
     emails = {email_key(row.get('Email')) for row in leads} | revenue_emails
     if any(email and email in serialized for email in emails):

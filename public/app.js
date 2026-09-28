@@ -27,24 +27,33 @@ const today = () => new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo
 const fmt = (key,value) => value==null||!Number.isFinite(value)?'—':['revenue','spend','cpm','cpc','cpl','cpft','cac'].includes(key)?money.format(value):['ctr','leadRate','clickRate','connectRate','trialRate','salesRate'].includes(key)?`${decimal.format(value)}%`:integer.format(value);
 function empty(){return Object.fromEntries(baseMetrics.map(m=>[m,0]));}
 function sum(rows){return rows.reduce((a,r)=>{baseMetrics.forEach(m=>a[m]+=r[m]??0);return a;},empty());}
-function revenueComplete(start,end){const s=state.data.impact.revenue;return !!s&&start>=s.completeStart&&end<=s.completeEnd;}
-function revenueValue(rows,start,end){const s=state.data.impact.revenue;return s&&start<=s.end&&end>=s.start?sum(rows).revenueCents/100:null;}
-function impactComplete(start,end,cohort=false){const s=state.data.impact;if(!s)return false;const first=s.completeStart||s.start,last=s.completeEnd||s.end;return start>=(cohort?(s.cohortStart>first?s.cohortStart:first):first)&&end<=last;}
-function derive(row,complete=true,start=state.start,end=state.end){const s=state.data.impact,overlap=s&&start<=s.end&&end>=s.start,cohort=impactComplete(start,end,true);return {...row,freeTrials:overlap?row.freeTrials:null,sales:overlap?row.sales:null,cpm:ratio(row.spend,row.impressions,1000),ctr:ratio(row.clicks,row.impressions,100),cpc:ratio(row.spend,row.clicks),cpl:complete?ratio(row.spend,row.leads):null,leadRate:complete?ratio(row.leads,row.views,100):null,clickRate:complete?ratio(row.leads,row.clicks,100):null,connectRate:ratio(row.views,row.clicks,100),trialRate:cohort?ratio(row.trialContacts,row.cohortContacts,100):null,salesRate:cohort?ratio(row.trialSalesContacts,row.trialContacts,100):null,cpft:complete&&impactComplete(start,end)?ratio(row.spend,row.freeTrials):null,cac:complete&&impactComplete(start,end)?ratio(row.spend,row.sales):null};}
+function acquisitionMode(){return state.basis!=='event'&&!!state.data?.acquisitionRecords;}
+function sourceRecords(){return acquisitionMode()?state.data.acquisitionRecords:state.data.records;}
+function revenueCoverage(){return acquisitionMode()?state.data.impact.acquisition:state.data.impact.revenue;}
+function revenueComplete(start,end){const s=revenueCoverage();return !!s&&start>=(s.completeStart||s.start)&&end<=(s.completeEnd||s.end);}
+function revenueValue(rows,start,end){const s=revenueCoverage();return s&&start<=s.end&&end>=s.start?sum(rows).revenueCents/100:null;}
+function impactComplete(start,end,cohort=false){const s=state.data.impact;if(!s)return false;if(acquisitionMode())return start>=s.acquisition.start&&end<=s.acquisition.end;const first=s.completeStart||s.start,last=s.completeEnd||s.end;return start>=(cohort?(s.cohortStart>first?s.cohortStart:first):first)&&end<=last;}
+function derive(row,complete=true,start=state.start,end=state.end){const s=acquisitionMode()?state.data.impact.acquisition:state.data.impact,overlap=s&&start<=s.end&&end>=s.start,cohort=impactComplete(start,end,true);return {...row,freeTrials:overlap?row.freeTrials:null,sales:overlap?row.sales:null,cpm:ratio(row.spend,row.impressions,1000),ctr:ratio(row.clicks,row.impressions,100),cpc:ratio(row.spend,row.clicks),cpl:complete?ratio(row.spend,row.leads):null,leadRate:complete?ratio(row.leads,row.views,100):null,clickRate:complete?ratio(row.leads,row.clicks,100):null,connectRate:ratio(row.views,row.clicks,100),trialRate:cohort?ratio(row.trialContacts,row.cohortContacts,100):null,salesRate:cohort?ratio(row.trialSalesContacts,row.trialContacts,100):null,cpft:complete&&impactComplete(start,end)?ratio(row.spend,row.freeTrials):null,cac:complete&&impactComplete(start,end)?ratio(row.spend,row.sales):null};}
 function rangeComplete(start,end){const s=state.data.sources;return start>=s.ads.start&&start>=s.leads.start&&end<=s.ads.end&&end<=s.leads.end;}
 function impactDetail(key,row){const info={freeTrials:'Ações atribuídas por e-mail · data do evento',sales:'Paid Trial · Pending e Approved',trialRate:`${integer.format(row.trialContacts)} de ${integer.format(row.cohortContacts)} contatos do período`,salesRate:`${integer.format(row.trialSalesContacts)} de ${integer.format(row.trialContacts)} contatos com trial`,cpft:'Investimento ÷ Free Trials atribuídos no período',cac:'Investimento ÷ vendas atribuídas no período'};return info[key];}
 function renderImpactNotice(rows){
   const total=sum(rows),assigned=sum(paid(rows)),s=state.data.impact,first=s.completeStart||s.start,last=s.completeEnd||s.end;
   const messages=s.mode==='sheets'?[`Impact + Recuperacao · leitura automática a cada hora. Free Trial e Paid Trial com status Pending ou Approved, atribuídos pelo e-mail e pelas UTMs de CurtoV3DP.`,...Object.entries(s.tabs).map(([name,tab])=>`${name}: eventos de ${longDate(tab.start)} a ${longDate(tab.end)}.`)]:[`Impact · snapshot de ${longDate(s.start)} a ${longDate(s.end)}.`];
-  if(state.end>last||state.start<first)messages.push(`Cobertura comum das conversões: ${longDate(first)} a ${longDate(last)}. Custo por Free Trial, CAC e taxas ficam indisponíveis para intervalos que ultrapassam essa cobertura.`);
+  if(acquisitionMode()){
+    const a=s.acquisition,excluded=Object.values(a.excluded).reduce((v,x)=>({freeTrials:v.freeTrials+x.freeTrials,sales:v.sales+x.sales,revenueCents:v.revenueCents+x.revenueCents}),{freeTrials:0,sales:0,revenueCents:0});
+    messages.unshift('Data do lead: Free Trials, Paid Trials e comissões recebidos depois são contabilizados na primeira inscrição disponível com origem única. CAC e CFT usam o investimento desses dias de captação.');
+    messages.push(`Resultado acumulado observado até ${longDate(a.observedThrough)}; cobertura comum das abas até ${longDate(a.commonThrough)}. Períodos recentes ainda podem converter: a comparação não iguala o tempo de maturação.`);
+    messages.push(`Na base completa, fora desta visão: ${integer.format(excluded.freeTrials)} Free Trials, ${integer.format(excluded.sales)} Paid Trials e ${money.format(excluded.revenueCents/100)} sem inscrição confiável ou com evento anterior à inscrição. Consulte Data do evento para os totais originais.`);
+    if(state.end>a.commonThrough)messages.push('Os inscritos mais recentes têm acompanhamento parcial nas fontes.');
+  }else if(state.end>last||state.start<first)messages.push(`Cobertura comum das conversões: ${longDate(first)} a ${longDate(last)}. Custo por Free Trial, CAC e taxas ficam indisponíveis para intervalos que ultrapassam essa cobertura.`);
   messages.push(`Neste filtro: ${integer.format(total.freeTrials-assigned.freeTrials)} Free Trials e ${integer.format(total.sales-assigned.sales)} Paid Trials fora da atribuição paga.`);
   if(s.diagnostics?.duplicatesRemoved)messages.push(`${integer.format(s.diagnostics.duplicatesRemoved)} repetições do mesmo evento removidas na leitura das abas.`);
   if(assigned.dateIssues)messages.push(`${integer.format(assigned.dateIssues)} ações atribuídas têm data anterior à inscrição; entram nas contagens, mas não nas taxas de avanço.`);
-  messages.push(`Taxas por contatos inscritos no período, com avanços observados até ${longDate(last)}. Horários e fusos não são convertidos; atribuição por e-mail não comprova causalidade.`);
+  messages.push(`Taxas por contatos inscritos no período, com avanços observados até ${longDate(acquisitionMode()?s.acquisition.observedThrough:last)}. Horários e fusos não são convertidos; atribuição por e-mail não comprova causalidade.`);
   $('impactNotice').textContent=messages.join(' ');
 }
 function inScope(r){return (!state.campaign||r.campaign===state.campaign)&&(!state.adset||r.adset===state.adset)&&(!state.ad||r.ad===state.ad);}
-function periodRows(start,end){return state.data.records.filter(r=>r.date>=start&&r.date<=end&&inScope(r));}
+function periodRows(start,end){return sourceRecords().filter(r=>r.date>=start&&r.date<=end&&inScope(r));}
 function paid(rows){return rows.filter(r=>r.campaign);}
 function previousRange(){const n=distance(state.start,state.end);return {start:addDays(state.start,-n),end:addDays(state.start,-1)};}
 function dates(start,end){const list=[];for(let d=start;d<=end;d=addDays(d,1))list.push(d);return list;}
@@ -53,8 +62,11 @@ function delta(key,current,previous,complete){if(!complete)return '<span class="
 function setPeriod(value){const end=today();state.end=value==='yesterday'?addDays(end,-1):end;state.start=value==='all'?state.data.coverage.start:['today','yesterday'].includes(value)?state.end:addDays(state.end,-Number(value)+1);$('start').value=state.start;$('end').value=state.end;document.querySelectorAll('#presets button').forEach(b=>b.classList.toggle('active',b.dataset.period===value));render();}
 function render(){if(!state.data)return;const rows=periodRows(state.start,state.end),current=derive(sum(paid(rows)),rangeComplete(state.start,state.end)),prev=previousRange(),previousRows=periodRows(prev.start,prev.end),comparison=derive(sum(paid(previousRows)),rangeComplete(prev.start,prev.end),prev.start,prev.end),complete=rangeComplete(state.start,state.end)&&rangeComplete(prev.start,prev.end);
   current.revenue=revenueValue(rows,state.start,state.end);comparison.revenue=revenueValue(previousRows,prev.start,prev.end);
-  const revenueScope=state.campaign||state.adset||state.ad?'Comissões atribuídas ao filtro':'Todas as comissões',revenueInfo=state.data.impact.revenue;
-  const revenueDetail=`${revenueScope} · Pending + Approved${revenueInfo&&!revenueComplete(state.start,state.end)?` · base de ${shortDate(revenueInfo.start)} a ${shortDate(revenueInfo.end)}`:''}`;
+  const revenueScope=state.campaign||state.adset||state.ad?'Comissões atribuídas ao filtro':acquisitionMode()?'Comissões dos leads do período':'Todas as comissões',revenueInfo=revenueCoverage();
+  const basisLabel=acquisitionMode()?'Data do lead':'Data do evento';
+  $('dateBasis').value=acquisitionMode()?'acquisition':'event';
+  $('funnelHint').textContent=acquisitionMode()?'Free Trials e Paid Trials na data de entrada do lead, incluindo conversões recebidas depois. Resultado acumulado; leads recentes ainda podem converter.':'Volumes na data do evento. Taxas de trial e venda acompanham contatos inscritos no período, até a cobertura das abas.';
+  const revenueDetail=`${revenueScope} · ${basisLabel} · Pending + Approved${revenueInfo&&!revenueComplete(state.start,state.end)?` · base de ${shortDate(revenueInfo.start)} a ${shortDate(revenueInfo.end)}`:''}`;
   const n=distance(state.start,state.end);$('periodLabel').textContent=`${longDate(state.start)} — ${longDate(state.end)} · ${n} ${n===1?'dia':'dias'} · anterior: ${shortDate(prev.start)} — ${shortDate(prev.end)}`;
   const partial=state.end>=today();const notices=[];if(!rangeComplete(state.start,state.end))notices.push(`Cobertura incompleta: mídia de ${longDate(state.data.sources.ads.start)} a ${longDate(state.data.sources.ads.end)}; leads de ${longDate(state.data.sources.leads.start)} a ${longDate(state.data.sources.leads.end)}. CPL e conversão em leads ficam indisponíveis nesse intervalo.`);if(!rangeComplete(prev.start,prev.end))notices.push('O período anterior não tem cobertura completa das duas fontes; a comparação percentual está desativada.');if(partial)notices.push('Hoje é parcial: os dados refletem a última leitura de cada planilha.');$('coverage').hidden=!notices.length;$('coverage').textContent=notices.join(' ');renderImpactNotice(rows);
   const cards=[
@@ -68,9 +80,9 @@ function render(){if(!state.data)return;const rows=periodRows(state.start,state.
     ['connectRate','Connect rate','ϟ','cyan','Page views ÷ cliques'],
     ['leads','Leads','•','green','Inscrições atribuídas ao tráfego'],
     ['cpl','Custo por lead','L','lime','Investimento ÷ leads'],
-    ['freeTrials','Free Trials','↗','green','Ações atribuídas · data do evento'],
+    ['freeTrials','Free Trials','↗','green',`Ações atribuídas · ${basisLabel}`],
     ['cpft','Custo por Free Trial','F','lime','Investimento ÷ Free Trials'],
-    ['sales','Paid Trial','✓','amber','Ações Paid Trial atribuídas'],
+    ['sales','Paid Trial','✓','amber',`Ações atribuídas · ${basisLabel}`],
     ['cac','Custo por Paid Trial','P','rose','Investimento ÷ Paid Trials'],
     ['leadRate','Conversão página → lead','L%','green','Leads ÷ page views'],
     ['trialRate','Conversão lead → Free Trial','F%','teal',`${integer.format(current.trialContacts)} de ${integer.format(current.cohortContacts)} contatos`],
@@ -203,6 +215,7 @@ async function load(){if(state.loading)return;state.loading=true;$('refresh').di
 $('presets').onclick=e=>{const b=e.target.closest('[data-period]');if(b&&state.data)setPeriod(b.dataset.period);};
 $('dateForm').onsubmit=e=>{e.preventDefault();if(!state.data)return;const start=$('start').value,end=$('end').value;if(!start||!end||start>end||distance(start,end)>1096){$('error').textContent='Escolha datas válidas, com início antes do fim e um intervalo de até 3 anos.';$('error').hidden=false;return;}$('error').hidden=true;state.start=start;state.end=end;document.querySelectorAll('#presets button').forEach(b=>b.classList.remove('active'));render();};
 $('campaign').onchange=e=>{state.campaign=e.target.value;state.adset=state.ad='';clearMediaSearch();render();};
+$('dateBasis').onchange=e=>{state.basis=e.target.value;if(state.data)render();};
 initMediaTables();
 $('mediaTables').onclick=e=>{
   const section=e.target.closest('[data-media-level]');if(!section||!state.data)return;

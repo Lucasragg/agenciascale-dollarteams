@@ -83,6 +83,7 @@ def merge_impact(dataset, snapshot):
     # Only allowlisted aggregates reach the public website.
     for record in dataset['records']:
         record.update({k: 0 for k in METRICS})
+    media_records=[dict(row) for row in dataset['records']]
     for item in snapshot['records']:
         row = {k: item[k] for k in ('date', 'campaign', 'adset', 'ad', 'attribution')}
         row.update({k: 0 for k in ('spend', 'impressions', 'clicks', 'views', 'leads')})
@@ -131,6 +132,30 @@ def merge_impact(dataset, snapshot):
                 raise ValueError('Revenue aggregates do not reconcile')
             dataset['coverage']['start']=min(dataset['coverage']['start'],revenue['start'])
             dataset['coverage']['end']=max(dataset['coverage']['end'],revenue['end'])
+        acquisition=snapshot.get('acquisition')
+        if acquisition:
+            if acquisition['dateBasis']!='registration':raise ValueError('Invalid acquisition date basis')
+            metadata={key:day(acquisition[key]) for key in ('start','end','observedThrough','commonThrough')}
+            metadata['dateBasis']='registration'
+            metadata['totals']=counts(acquisition['totals'],METRICS)
+            metadata['excluded']={reason:counts(acquisition['excluded'][reason],('freeTrials','sales','revenueCents')) for reason in ('noEmailMatch','ambiguousOrigin','beforeRegistration')}
+            acquisition_rows=[]
+            for item in snapshot['acquisitionRecords']:
+                row={key:item[key] for key in ('campaign','adset','ad','attribution')}
+                row['date']=day(item['date'])
+                if not metadata['start']<=row['date']<=metadata['end']:raise ValueError('Acquisition date outside lead coverage')
+                for level in ('campaign','adset','ad'):
+                    if row[level] and row[level] not in dataset['dimensions'][level]:raise ValueError('Unknown acquisition media ID')
+                row.update(counts(item,METRICS))
+                row.update({k:0 for k in ('spend','impressions','clicks','views','leads')})
+                acquisition_rows.append(row)
+            for metric in METRICS:
+                if sum(row[metric] for row in acquisition_rows)!=metadata['totals'][metric]:raise ValueError('Acquisition totals mismatch')
+            for metric in ('freeTrials','sales','revenueCents'):
+                if metadata['totals'][metric]+sum(x[metric] for x in metadata['excluded'].values())!=sum(row[metric] for row in dataset['records']):
+                    raise ValueError('Event/acquisition reconciliation failed')
+            dataset['impact']['acquisition']=metadata
+            dataset['acquisitionRecords']=sorted(media_records+acquisition_rows,key=lambda r:(r['date'],r['campaign'],r['adset'],r['ad']))
     dataset['schema'] = 2
     dataset['coverage']['start'] = min(dataset['coverage']['start'], snapshot['start'])
     dataset['coverage']['end'] = max(dataset['coverage']['end'], snapshot['end'])
